@@ -1,0 +1,65 @@
+name: PUMA 560 MATLAB verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - puma560_course.m
+      - .github/workflows/puma560-matlab.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch Peter Corke toolbox dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          fetch_toolbox() {
+            git init -q "$1"
+            git -C "$1" fetch -q --depth=1 "https://github.com/petercorke/$2.git" "$3"
+            git -C "$1" checkout -q --detach FETCH_HEAD
+          }
+          fetch_toolbox toolboxes/common toolbox-common-matlab 6678f1a23e9b4f5abe98c23768de2b0e278a9362
+          fetch_toolbox toolboxes/spatialmath spatialmath-matlab 6eeff4a79f14286705560b84f1fe72e0b7e0e7f7
+          fetch_toolbox toolboxes/robotics robotics-toolbox-matlab 06fddf5228cbfa1132fa63b8e336b43c5ed04899
+      - uses: matlab-actions/setup-matlab@v3
+        with:
+          release: R2025b
+      - name: Run MATLAB simulation and verify outputs
+        uses: matlab-actions/run-command@v2
+        with:
+          command: |
+            addpath('toolboxes/common','toolboxes/spatialmath','toolboxes/robotics','toolboxes/robotics/models');
+            set(groot,'DefaultFigureVisible','off');
+            mkdir('puma560_results');
+            diary('puma560_results/matlab_run.txt');
+            fprintf('MATLAB version: %s\nPlatform: %s\n',version,computer);
+            fprintf('PUMA 560 model: %s\n',which('mdl_puma560'));
+            puma560_course;
+            result = readtable('puma560_results/trajectory_and_torque.csv');
+            K = load('puma560_results/matlab_kinematics.mat');
+            assert(isequal(size(result),[61 31]));
+            assert(all(isfinite(result{:,:}),'all'));
+            assert(max(abs(result.t_s-(0:0.05:3).')) < 1e-12);
+            assert(all(K.poseError < 1e-9,'all') && strcmp(K.branches{K.chosen},'rdn'));
+            assert(rank(K.J)==6 && nnz(K.withinLimits)==0);
+            assert(all(isfile(fullfile('puma560_results',{'configurations.png','joint_trajectory.png','joint_torque.png'}))));
+            disp('MATLAB verification passed.');
+            diary off;
+      - name: Upload MATLAB results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: puma560-matlab-results
+          path: puma560_results/
+          if-no-files-found: warn
+          retention-days: 7
